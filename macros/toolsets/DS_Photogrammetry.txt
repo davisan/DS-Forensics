@@ -1,0 +1,1718 @@
+/*	
+DS ImageJ Forensic Tools - v0.1
+by Davi Santos
+*/
+
+/*
+ * Settings
+ */
+var colVPLines1 = "red";
+var colVPLines2 = "green";
+var colVPLines3 = "blue";
+var colHorizon = "magenta";
+var colAnchorLine = "cyan";
+var colReference = "orange";
+var colSubject = "pink";
+var colMeasure = "red";
+var colMeasureLineA = "blue";
+var colMeasureLineB = "green";
+var colMeasureLineC = "red";
+var colMeasureLineAux = "white";
+
+var sizeLine = 1;
+var sizeVP = 1;
+var sizeHorizonLine = 1;
+var sizeAnchorLine = 1;
+var sizeReference = 1;
+var sizeSubject = 1;
+var sizeMeasure = 5;
+var sizeTextOffset = 50;
+var sizeTextSize = 48;
+var sizeCross = 8;
+var sizeMeasureDistance = 50;
+
+var strLineLabel = "L";
+var strVPLabel = "VP";
+var strMPLabel = "MP";
+var strVP1Label = strVPLabel+"X";
+var strVP2Label = strVPLabel+"Y";
+var strVP3Label = strVPLabel+"Z";
+var strELabel = "E";
+var strHorizonLineLabel = "HL";
+var strAnchorLineLabel = "AL";
+var strReferenceLabel = "Reference";
+var strSubjectLabel = "Subject";
+var strMeasureLabel = "Measure";
+
+/*
+ * Helper functions
+ */
+function ErrorMessage(msg)
+{
+	exit("ERROR! " + msg);
+}
+function DrawText(label, x,y, color)
+{
+	setJustification("center");
+	setFont("SansSerif", sizeTextSize);
+	setColor("black");
+	drawString(label, x+1, y+1);
+	setColor(color);
+	drawString(label, x, y);
+}
+function DrawCross(x,y, color)
+{
+	setColor(color);
+	drawLine(x-sizeCross ,y,x+sizeCross,y);
+	drawLine(x,y-sizeCross, x, y+sizeCross);
+}
+function DrawMeasurement(x1,y1, x2,y2, label, distScale, color)
+{
+	l = Line(x1, y1, x2, y2);
+	l1 = PerpendicularLine(x1, y1, x2, y2);
+	l2 = PerpendicularLine(x2, y2, x1, y1);
+	
+	l1len = sqrt((l1[0] - l1[2])*(l1[0] - l1[2]) + (l1[1] - l1[3])*(l1[1] - l1[3]));
+	l2len = sqrt((l2[0] - l2[2])*(l2[0] - l2[2]) + (l2[1] - l2[3])*(l2[1] - l2[3]));	
+	
+	l1x = distScale*sizeMeasureDistance*((l1[0] - l1[2])/l1len);
+	l1y = distScale*sizeMeasureDistance*((l1[1] - l1[3])/l1len);
+	l1x *= -1;
+	l1y *= -1;
+	
+	l2x = distScale*sizeMeasureDistance*((l2[0] - l2[2])/l2len);
+	l2y = distScale*sizeMeasureDistance*((l2[1] - l2[3])/l2len);
+	
+	setLineWidth(sizeMeasure);
+	setColor(colMeasureLineAux);
+	drawLine(x1, y1, l2x+x1, l2y+y1);
+	drawLine(x2, y2, l1x+x2, l1y+y2);
+	setColor(color);
+	drawLine(l2x+x1, l2y+y1, l1x+x2, l1y+y2);
+	DrawText(label, (l2x+x1+l1x+x2)*0.5, (l2y+y1+l1y+y2)*0.5, color);
+}
+function FindROIByName(name)
+{
+	roiCount = roiManager("count");
+	for(i=0; i < roiCount; ++i)
+	{
+		roiManager("Select", i);
+		if(Roi.getName == name)
+		{
+			roiManager("Deselect");
+			return i;
+		}
+	}
+	roiManager("Deselect");
+	return -1;
+}
+function GetROIsWithRE(RE)
+{
+	res = newArray();
+	k = 0;
+	roiCount = roiManager("count");
+	for(i=0; i < roiCount; ++i)
+	{
+		roiManager("Select", i);
+		roiName = Roi.getName;
+		if(roiName.matches(RE))
+		{
+			res[k] = roiName;
+			k++;
+		}
+	}
+	roiManager("Deselect");
+	return res;
+}
+function LinearRegression(px,py)
+{
+	res = newArray(0,0);
+	n = px.length;
+	meanx = 0;
+	meany = 0;
+	for(i=0; i < px.length; ++i)
+	{
+		meanx += px[i];
+	}
+	for(i=0; i < py.length; ++i)
+	{
+		meany += py[i];
+	}
+	meanx /= px.length;
+	meany /= py.length;
+	
+	SSxy = 0;
+	for(i=0; i < px.length; ++i)
+	{
+		SSxy += (px[i]-meanx)*(py[i]-meany);
+	}
+	
+	SSxx = 0;
+	for(i=0; i < px.length; ++i)
+	{
+		SSxx += (px[i]-meanx)*(px[i]-meanx);
+	}
+	res[1] = SSxy / SSxx;
+	res[0] = meany - res[1]*meanx;
+	return res;
+}
+function EvalLineSlopeIntercept(x, line)
+{
+	return line[1]*x + line[0];
+}
+function EvalLineStandard(x, line)
+{
+	b = - (line[0] / line[1]);
+	a = (line[2] / line[1]);
+	return b*x+a;
+}
+function Line(p1x, p1y, p2x, p2y) 	// Ax + By = C
+{	
+	res = newArray(0,0,0);
+	res[0] = p1y - p2y;
+	res[1] = p2x - p1x;
+	res[2] = -(p1x*p2y - p2x*p1y);
+	return res;
+}
+function PerpendicularLine(p1x, p1y, p2x, p2y)	// line passing through (p2x, p2y)
+{
+	xdiff = (p2x - p1x)*0.5;
+	ydiff = (p2y - p1y)*0.5;
+	res = newArray;
+	res[0] = p2x - ydiff;
+	res[1] = p2y + xdiff;
+	res[2] = p2x + ydiff;
+	res[3] = p2y - xdiff;
+	return res;
+}
+function IntersectionStandard(L1, L2)
+{
+	D  = L1[0] * L2[1] - L1[1] * L2[0];
+    Dx = L1[2] * L2[1] - L1[1] * L2[2];
+    Dy = L1[0] * L2[2] - L1[2] * L2[0];
+	if (D != 0)
+	{
+		x = Dx/D;
+		y = Dy/D;
+		return newArray(x,y);
+	}
+	return newArray();
+}
+function ClosestPointStandard(x0, y0, line)
+{
+	res = newArray(2);
+	a = line[0];
+	b = line[1];
+	c = -line[2];
+	res[0] = (b*( b*x0 - a*y0) - a*c) / (a*a+b*b);
+	res[1] = (a*(-b*x0 + a*y0) - b*c) / (a*a+b*b);
+	return res;
+}
+function ProjectPoint(x,y,z,f) { 
+	res = newArray;
+	res[0] = f*x/z;
+	res[1] = f*y/z;
+	return res;
+}
+function CrossRatio(pA, pB, pC, pD)
+{
+	AC = sqrt((pA[0]-pC[0])*(pA[0]-pC[0]) + (pA[1]-pC[1])*(pA[1]-pC[1]));
+	AD = sqrt((pA[0]-pD[0])*(pA[0]-pD[0]) + (pA[1]-pD[1])*(pA[1]-pD[1]));
+	BC = sqrt((pB[0]-pC[0])*(pB[0]-pC[0]) + (pB[1]-pC[1])*(pB[1]-pC[1]));
+	BD = sqrt((pB[0]-pD[0])*(pB[0]-pD[0]) + (pB[1]-pD[1])*(pB[1]-pD[1]));
+	
+	k = (AC/AD)*(BD/BC);
+	return (k);
+}
+function GetCameraAngle(cx, cy, Hx, Hy, Vx, Vy) {
+	PPH = sqrt((Hx-cx)*(Hx-cx) + (Hy-cy)*(Hy-cy));
+	PPI = sqrt((Vx-cx)*(Vx-cx) + (Vy-cy)*(Vy-cy));
+	res = newArray(2);
+	if(PPH == 0.0) {	// angle = 0
+		res[0] = 0;
+		res[1] = 0;
+		return res;
+	}
+	if(PPI == 0.0) {	// angle = 90
+		res[0] = 90;
+		res[1] = 0;
+		return res;
+	}
+	ratio = sqrt( PPH / PPI);
+	res[0] = atan(ratio) * (180/PI);
+	res[1] = sqrt(PPI)*sqrt(PPH);
+	//res[1] = PPH/tan(ratio);
+	//res[2] = PPI*tan(ratio);
+	return res;
+}
+function MakeObliqueVP()
+{
+	setOption("ExpandableArrays", true);
+	Eroi = FindROIByName("E");
+	if(Eroi == -1) ErrorMessage("E not found!)";
+	roiManager("Select", Eroi);
+	Roi.getCoordinates(Ex, Ey);
+	E = Line(Ex[0], Ey[0], Ex[1], Ey[1]);
+	
+	hl = FindROIByName(strHorizonLineLabel);
+	if(hl == -1) ErrorMessage(strHorizonLineLabel + " not found!)";
+	roiManager("Select", hl);
+	Roi.getCoordinates(hlx, hly);
+	horizon = Line(hlx[0], hly[0], hlx[1], hly[1]);
+	
+	vpROIs = GetROIsWithRE(strVPLabel+"(-?)([0-9]*)(.?)([0-9]*)");
+	if(vpROIs.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No VPs!");
+	}
+	Dialog.create("DS Photogrammetry");
+	Dialog.addMessage("Select the VP");
+	Dialog.addChoice("VP", vpROIs, vpROIs[vpROIs.length-1]);
+	Dialog.addNumber("Oblique VP Angle", 0, 2, 6, "DEG");
+	Dialog.addChoice("Create MP?", newArray("Yes", "No"), "Yes");
+	Dialog.show();
+	varVP = Dialog.getChoice();
+	angle = Dialog.getNumber();
+	makemp = (Dialog.getChoice() == "Yes");
+		
+	vp = FindROIByName(varVP);
+	if(vp == -1) ErrorMessage("" + varVP + " not found!");
+	roiManager("Select", vp);
+	Roi.getCoordinates(vpx, vpy);
+	
+	varMP = Roi.getProperty("MP");
+	if(varMP == "") {
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No MP for the selected VP!");
+	}
+	mp = FindROIByName(varMP);
+	if(mp == -1) ErrorMessage("" + varMP + " not found!");
+	roiManager("Select", mp);
+	Roi.getCoordinates(mpx, mpy);
+	
+	print("Creating oblique VP at " + varVP);
+	print("with angle " + angle);
+	print("with MP " + varMP);
+	print("VP Coords" + vpx[0] + ", " + vpy[0]);
+	print("MP Coords" + mpx[0] + ", " + mpy[0]);
+	
+	roiManager("Deselect");
+	run("Select None");
+}
+function MakeVP()
+{
+	Eroi = FindROIByName(strELabel);
+	if(Eroi == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("E not found!)";
+	}
+	roiManager("Select", Eroi);
+	Roi.getCoordinates(Ex, Ey);
+	E = Line(Ex[0], Ey[0], Ex[1], Ey[1]);
+	
+	hl = FindROIByName(strHorizonLineLabel);
+	if(hl == -1)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strHorizonLineLabel + " not found!)";
+	}
+	roiManager("Select", hl);
+	Roi.getCoordinates(hlx, hly);
+	horizon = Line(hlx[0], hly[0], hlx[1], hly[1]);
+		
+	vx = Ex[1] - Ex[0];
+	vy = Ey[1] - Ey[0];
+	
+	Dialog.create("DS Photogrammetry");
+	Dialog.addNumber("VP Angle", 0, 2, 6, "DEG");
+	Dialog.addChoice("Create MP?", newArray("Yes", "No"), "Yes");
+	Dialog.show();
+	angle = Dialog.getNumber();
+	makemp = (Dialog.getChoice() == "Yes");
+	
+	anglerad = angle * (PI/180.0);
+	destx = (cos(anglerad)*vx - sin(anglerad)*vy) + Ex[0];
+	desty = (sin(anglerad)*vx + cos(anglerad)*vy) + Ey[0];
+	lineAngle = Line(Ex[0], Ey[0], destx, desty);
+	hc = IntersectionStandard(horizon, lineAngle);
+	if(hc.length == 0) ErrorMessage("The lines are parallel!"));
+	
+	makePoint(hc[0], hc[1]);
+	currentLine = RoiManager.size;
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strVPLabel+angle);
+	roiManager("Set Color", "magenta");
+	roiManager("Set Line Width", 1);
+	Roi.setProperty("Type", "vp");
+	Roi.setProperty("DefaultX0", hc[0]);
+	Roi.setProperty("DefaultY0", hc[1]);
+	if(makemp) Roi.setProperty("MP", strMPLabel+angle);
+	roiManager("Deselect");
+	run("Select None");
+	
+	if(makemp)
+	{
+		vpx = newArray(1);
+		vpy = newArray(1);
+		vpx[0] = hc[0];
+		vpy[0] = hc[1];
+		
+		lenVP1 = sqrt((Ex[0]-vpx[0])*(Ex[0]-vpx[0]) + (Ey[0]-vpy[0])*(Ey[0]-vpy[0]));
+		lenVP2 = sqrt((vpx[0]-Ex[1])*(vpx[0]-Ex[1]) + (vpy[0]-Ey[1])*(vpy[0]-Ey[1]));
+		mpx = lenVP1*((Ex[1]-vpx[0])/lenVP2)+vpx[0];
+		mpy = lenVP1*((Ey[1]-vpy[0])/lenVP2)+vpy[0];
+		mp = ClosestPointStandard(mpx, mpy, horizon);
+		makePoint(mp[0], mp[1]);
+		currentLine = RoiManager.size;
+		roiManager("add");
+		roiManager("Select", currentLine);
+		roiManager("Rename", strMPLabel+angle);
+		roiManager("Set Color", "magenta");
+		roiManager("Set Line Width", 1);
+		Roi.setProperty("Type", "vp");
+		Roi.setProperty("DefaultX0", mp[0]);
+		Roi.setProperty("DefaultY0", mp[1]);
+		roiManager("Deselect");
+		run("Select None");
+	}
+}
+function makeMP()
+{
+	setOption("ExpandableArrays", true);
+	Eroi = FindROIByName(strELabel);
+	if(Eroi == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("E not found!)";
+	}
+	roiManager("Select", Eroi);
+	Roi.getCoordinates(Ex, Ey);
+	E = Line(Ex[0], Ey[0], Ex[1], Ey[1]);
+	
+	hl = FindROIByName(strHorizonLineLabel);
+	if(hl == -1)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strHorizonLineLabel + " not found!)";
+	}
+	roiManager("Select", hl);
+	Roi.getCoordinates(hlx, hly);
+	horizon = Line(hlx[0], hly[0], hlx[1], hly[1]);
+	
+	vpROIs = GetROIsWithRE(strVPLabel+"[xyzXYZ]?-?[0-9]*.?[0-9]*");
+	if(vpROIs.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No VPs!");
+	}
+	Dialog.create("DS Photogrammetry");
+	Dialog.addMessage("Select the VP");
+	Dialog.addChoice("VP", vpROIs, vpROIs[vpROIs.length-1]);
+	Dialog.show();
+	varVP = Dialog.getChoice();
+	vp = FindROIByName(varVP);
+	if(vp == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("" + varVP + " not found!");
+	}
+	roiManager("Select", vp);
+	Roi.getCoordinates(vpx, vpy);
+	
+	lenVP1 = sqrt((Ex[0]-vpx[0])*(Ex[0]-vpx[0]) + (Ey[0]-vpy[0])*(Ey[0]-vpy[0]));
+	lenVP2 = sqrt((vpx[0]-Ex[1])*(vpx[0]-Ex[1]) + (vpy[0]-Ey[1])*(vpy[0]-Ey[1]));
+	
+	mpx = lenVP1*((Ex[1]-vpx[0])/lenVP2)+vpx[0];
+	mpy = lenVP1*((Ey[1]-vpy[0])/lenVP2)+vpy[0];
+	mp = ClosestPointStandard(mpx, mpy, horizon);
+	
+	makeLine(Ex[1], Ey[1], mp[0], mp[1]);
+	
+	roiManager("Deselect");
+	run("Select None");
+}
+
+function CreateLine(currentLine, width, label, color)
+{
+	getSelectionCoordinates(px, py);
+	lineCoefs = LinearRegression(px,py);
+	px0 = 0;
+	py0 = EvalLineSlopeIntercept(0, lineCoefs);
+	px1 = width;
+	py1 = EvalLineSlopeIntercept(width, lineCoefs);
+	makeLine(px0, py0, px1, py1);
+	
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", label+currentLine);
+	roiManager("Set Color", color);
+	roiManager("Set Line Width", sizeLine);
+	Roi.setProperty("Type", "line");
+	Roi.setProperty("DefaultX0", px0);
+	Roi.setProperty("DefaultY0", py0);
+	Roi.setProperty("DefaultX1", px1);
+	Roi.setProperty("DefaultY1", py1);
+	roiManager("Deselect");
+	run("Select None");
+}
+function CreateVP(currentState, label, color)
+{
+	RoiManager.select(currentState-2);
+	Roi.getCoordinates(px0, py0);
+	RoiManager.select(currentState-1);
+	Roi.getCoordinates(px1, py1);
+	L1 = Line(px0[0],py0[0], px0[1],py0[1]);
+	L2 = Line(px1[0],py1[0], px1[1],py1[1]);
+	inter = IntersectionStandard(L1,L2);
+	if(inter.length == 0) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("The lines are parallel!"));
+	}
+	run("Select None");
+	makePoint(inter[0], inter[1], "big yellow hybrid");
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", label);
+	roiManager("Set Color", color);
+	roiManager("Set Line Width", sizeVP);
+	Roi.setProperty("Type", "vp");
+	Roi.setProperty("DefaultX0", inter[0]);
+	Roi.setProperty("DefaultY0", inter[1]);
+	roiManager("Deselect");
+	run("Select None");
+}
+function CheckIfDone()
+{
+	hasSelection = false;
+	if(getValue("selection.size") > 0)
+	{
+		hasSelection = true;
+		getSelectionCoordinates(px, py);
+	}
+	hasHL = FindROIByName(strHorizonLineLabel) != -1;
+	hasVP1 = FindROIByName(strVP1Label) != -1;
+	hasVP2 = FindROIByName(strVP2Label) != -1;
+	hasVP3 = FindROIByName(strVP3Label) != -1;
+	if(hasSelection) makeSelection("point", px, py);
+	return hasHL && hasVP1 && hasVP2 && hasVP3;
+}
+	
+/*
+ * Photogrammetry setup step by step
+ */
+function PhotogrammetryStep()
+{
+	getDimensions(width, height, channels, slices, frames);
+	currentState = RoiManager.size;
+	currentLine = RoiManager.size;
+
+	if(CheckIfDone())
+	{
+		currentState = -10;
+	}
+
+	if(currentState == 0)
+	{
+		//print("Drawing first line of VP1");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines1);
+	}
+	else if(currentState == 1)
+	{
+		//print("Drawing second line of VP1");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines1);
+		PhotogrammetryStep();
+	}
+	else if(currentState == 2)
+	{
+		//print("Making the VP1");
+		CreateVP(currentState, strVP1Label, colVPLines1);
+	}
+	else if(currentState == 3)
+	{
+		//print("Drawing first line of VP2");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines2);
+	}
+	else if(currentState == 4)
+	{
+		//print("Drawing second line of VP2");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines2);
+		PhotogrammetryStep();
+	}
+	else if(currentState == 5)
+	{
+		//print("Making the VP2");
+		CreateVP(currentState, strVP2Label, colVPLines2);
+	}
+	else if(currentState == 6)
+	{
+		//print("Drawing first line of VP3");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines3);
+	}
+	else if(currentState == 7)
+	{
+		//print("Drawing second line of VP3");
+		if(getValue("selection.size") < 2)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage("Must have a selection with at least two points!");
+		}
+		CreateLine(currentLine, width, strLineLabel, colVPLines3);
+		PhotogrammetryStep();
+	}
+	else if(currentState == 8)
+	{
+		//print("Making the VP3");
+		CreateVP(currentState, strVP3Label, colVPLines3);
+		PhotogrammetryStep();
+	}
+	else if(currentState == 9)
+	{
+		//print("Making the Horizon Line");
+		vp1 = FindROIByName(strVP1Label);
+		if(vp1 == -1) 
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage(strVP1Label + " not found!)";
+		}
+		roiManager("Select", vp1);
+		Roi.getCoordinates(vp1x, vp1y);
+		vp2 = FindROIByName(strVP2Label);
+		if(vp2 == -1) 
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage(strVP2Label + " not found!)";
+		}
+		roiManager("Select", vp2);
+		Roi.getCoordinates(vp2x, vp2y);
+
+		horizon = Line(vp1x[0], vp1y[0], vp2x[0], vp2y[0]);
+		px0 = 0;
+		py0 = EvalLineStandard(0, horizon);
+		px1 = width;
+		py1 = EvalLineStandard(width, horizon);
+		makeLine(px0, py0, px1, py1);
+		
+		roiManager("add");
+		roiManager("Select", currentLine);
+		roiManager("Rename", strHorizonLineLabel);
+		roiManager("Set Color", colHorizon);
+		roiManager("Set Line Width", sizeHorizonLine);
+		Roi.setProperty("Type", "line");
+		Roi.setProperty("DefaultX0", px0);
+		Roi.setProperty("DefaultY0", py0);
+		Roi.setProperty("DefaultX1", px1);
+		Roi.setProperty("DefaultY1", py1);
+		roiManager("Deselect");
+		run("Select None");
+	} 
+	else if(currentState == -10)
+	{
+			
+	}
+	roiManager("UseNames", "true");
+	roiManager("Show All");
+}
+
+/*
+ * Create a subject to take its measurements
+ */
+function makeSubject()
+{
+	setOption("ExpandableArrays", true);
+	getDimensions(width, height, channels, slices, frames);
+	hasSelection = false;
+	if(getValue("selection.size") != 2)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("Must have two reference points!");
+	}
+	getSelectionCoordinates(px, py);
+	currentLine = RoiManager.size;
+	anchorLines = GetROIsWithRE(strAnchorLineLabel+"[0-9]*");
+	makeSelection("point", px, py);
+
+	Dialog.create("DS Photogrammetry - Create Subject");
+	Dialog.addMessage("Select the Reference ArchorLine");
+	Dialog.addChoice("Anchor Line", anchorLines);
+	Dialog.show();
+	varAnchorLine = Dialog.getChoice();
+	roiid =  FindROIByName(varAnchorLine);
+	if(roiid == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("ROI " + varAnchorLine + " not found!");
+	}
+	roiManager("Select", roiid);
+	Roi.getCoordinates(vpx, vpy);
+	roiLine = Line(vpx[0], vpy[0], vpx[1], vpy[1]);
+	closest1 = ClosestPointStandard(px[0], py[0], roiLine);
+	closest2 = ClosestPointStandard(px[1], py[1], roiLine);
+	run("Select None");
+	makeLine(closest1[0], closest1[1], closest2[0], closest2[1]);
+
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strSubjectLabel+currentLine);
+	roiManager("Set Color", colSubject);
+	roiManager("Set Line Width", sizeSubject);
+	Roi.setProperty("Type", "line");
+	Roi.setProperty("DefaultX0", closest1[0]);
+	Roi.setProperty("DefaultY0", closest1[1]);
+	Roi.setProperty("DefaultX1", closest2[0]);
+	Roi.setProperty("DefaultY1", closest2[1]);
+	roiManager("Deselect");
+	run("Select None");
+}
+
+/*
+ * Create a reference segment
+ */
+function makeRef()
+{
+	setOption("ExpandableArrays", true);
+	getDimensions(width, height, channels, slices, frames);
+	hasSelection = false;
+	if(getValue("selection.size") != 2)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("Must have two reference points!");
+	}
+	getSelectionCoordinates(px, py);
+	currentLine = RoiManager.size;
+	anchorLines = GetROIsWithRE(strAnchorLineLabel+"[0-9]*");
+	makeSelection("point", px, py);
+	
+	if(anchorLines.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No anchor lines!");
+	}
+
+	Dialog.create("DS Photogrammetry - Create Reference");
+	Dialog.addMessage("Select the Reference ArchorLine");
+	Dialog.addChoice("Anchor Line", anchorLines);
+	Dialog.addNumber("Referente Length", 1, 3, 6, "m");
+	Dialog.show();
+	varAnchorLine = Dialog.getChoice();
+	varRefLength = Dialog.getNumber();
+	roiid =  FindROIByName(varAnchorLine);
+	if(roiid == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("ROI " + varAnchorLine + " not found!");
+	}
+	roiManager("Select", roiid);
+	Roi.getCoordinates(vpx, vpy);
+	roiLine = Line(vpx[0], vpy[0], vpx[1], vpy[1]);
+	closest1 = ClosestPointStandard(px[0], py[0], roiLine);
+	closest2 = ClosestPointStandard(px[1], py[1], roiLine);
+	run("Select None");
+	makeLine(closest1[0], closest1[1], closest2[0], closest2[1]);
+
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strReferenceLabel+currentLine);
+	roiManager("Set Color", colReference);
+	roiManager("Set Line Width", sizeReference);
+	Roi.setProperty("RefLength", varRefLength);
+	Roi.setProperty("Type", "line");
+	Roi.setProperty("DefaultX0", closest1[0]);
+	Roi.setProperty("DefaultY0", closest1[1]);
+	Roi.setProperty("DefaultX1", closest2[0]);
+	Roi.setProperty("DefaultY1", closest2[1]);
+	roiManager("Deselect");
+	run("Select None");
+}
+/*
+ * Creats an anchor line at the VP
+ */
+ function anchorVP()
+{
+	setOption("ExpandableArrays", true);
+	getDimensions(width, height, channels, slices, frames);
+	currentLine = RoiManager.size;
+	
+	vpROIs = GetROIsWithRE(strVPLabel+"[xyzXYZ]?-?[0-9]*.?[0-9]*");
+	if(vpROIs.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No VPs!");
+	}
+	Dialog.create("DS Photogrammetry");
+	Dialog.addMessage("Select the VP");
+	Dialog.addChoice("VP", vpROIs, vpROIs[vpROIs.length-1]);
+	Dialog.show();
+	varVP = Dialog.getChoice();
+		
+	vp = FindROIByName(varVP);
+	if(vp == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("" + varVP + " not found!");
+	}
+	roiManager("Select", vp);
+	Roi.getCoordinates(vpx, vpy);
+	run("Select None");
+	makeLine(vpx[0], vpy[0], width/2, height/2);
+		
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strAnchorLineLabel+currentLine);
+	roiManager("Set Color", colAnchorLine);
+	roiManager("Set Line Width", sizeAnchorLine);
+	Roi.setProperty("VP", varVP);
+	Roi.setProperty("Type", "line");
+	Roi.setProperty("DefaultX0", vpx[0]);
+	Roi.setProperty("DefaultY0", vpy[0]);
+	Roi.setProperty("DefaultX1", width/2);
+	Roi.setProperty("DefaultY1", height/2);
+	roiManager("Deselect");
+}
+
+/*
+ * Reset a line or VP to its initial position
+ */
+function resetRoi()
+{
+	if(RoiManager.selected != 1)
+	{
+		ErrorMessage("Must select ONE ROI!");
+	}
+	
+	type = Roi.getProperty("Type");
+	if(type == "vp")
+	{
+		col = Roi.getStrokeColor;
+		w = Roi.getStrokeWidth;
+		x0 = Roi.getProperty("DefaultX0");
+		y0 = Roi.getProperty("DefaultY0");
+		mp = Roi.getProperty("MP");
+		makePoint(x0, y0);
+		Roi.setStrokeColor(col);
+		Roi.setStrokeWidth(w);
+		Roi.setProperty("Type", "vp");
+		Roi.setProperty("DefaultX0", x0);
+		Roi.setProperty("DefaultY0", y0);
+		roiManager("update");
+		if(mp != "") Roi.setProperty("MP", mp);
+	}
+	if(type == "line")
+	{
+		col = Roi.getStrokeColor;
+		w = Roi.getStrokeWidth;
+		x0 = Roi.getProperty("DefaultX0");
+		y0 = Roi.getProperty("DefaultY0");
+		x1 = Roi.getProperty("DefaultX1");
+		y1 = Roi.getProperty("DefaultY1");
+		vp = Roi.getProperty("VP");
+		len = Roi.getProperty("RefLength");
+		makeLine(x0, y0, x1, y1);
+		Roi.setStrokeColor(col);
+		Roi.setStrokeWidth(w);
+		Roi.setProperty("Type", "line");
+		Roi.setProperty("DefaultX0", x0);
+		Roi.setProperty("DefaultY0", y0);
+		Roi.setProperty("DefaultX1", x1);
+		Roi.setProperty("DefaultY1", y1);
+		if(vp != "") Roi.setProperty("VP", vp);
+		if(len != "") Roi.setProperty("RefLength", len);
+		roiManager("update")
+	}
+}
+function doMeasure()
+{
+	setOption("ExpandableArrays", true);
+	subjectROIs = GetROIsWithRE(strSubjectLabel+"[0-9]*");
+	if(subjectROIs.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No Subjects!");
+	}
+	refROIsA = GetROIsWithRE(strReferenceLabel+"[0-9]*");
+	if(refROIsA.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No References!");
+	}
+	refROIsB = GetROIsWithRE(strReferenceLabel+"[0-9]*");
+	if(refROIsB.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No References!");
+	}
+	
+	refROIsB[refROIsB.length] = strVP3Label;
+	refROIsB[refROIsB.length] = "Camera Height";
+
+	Dialog.create("DS Photogrammetry - Calculate Subject height");
+	Dialog.addChoice("Subject", subjectROIs, subjectROIs[0]);
+	Dialog.addChoice("Reference 1", refROIsA, refROIsA[0]);
+	Dialog.addChoice("Reference 2", refROIsB, refROIsB[refROIsB.length-3]);
+	Dialog.addNumber("Camera Height", 1.50, 2, 6, "m");
+	Dialog.addChoice("Draw Lines", newArray("Yes", "No"), "Yes");
+	Dialog.show();
+	subjectStr = Dialog.getChoice();
+	refAstr = Dialog.getChoice();
+	refBstr = Dialog.getChoice();
+	camHeight = Dialog.getNumber();
+	drawLines = (Dialog.getChoice() == "Yes");
+	
+	if(refAstr == refBstr)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("References A and B can't be equal!");
+	}
+	
+	hl = FindROIByName(strHorizonLineLabel);
+	if(hl == -1)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strHorizonLineLabel + " not found!)";
+	}
+	roiManager("Select", hl);
+	Roi.getCoordinates(hlx, hly);
+	horizon = Line(hlx[0], hly[0], hlx[1], hly[1]);
+	
+	vp3 = FindROIByName(strVP3Label);
+	if(vp3 == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strVP3Label + " not found!)";
+	}
+	roiManager("Select", vp3);
+	Roi.getCoordinates(vp3x, vp3y);
+	
+	subject = FindROIByName(subjectStr);
+	if(subject == -1)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(subject + " not found!)";
+	}
+	roiManager("Select", subject);
+	subjectx0 = parseFloat(Roi.getProperty("DefaultX0"));
+	subjecty0 = parseFloat(Roi.getProperty("DefaultY0"));
+	subjectx1 = parseFloat(Roi.getProperty("DefaultX1"));
+	subjecty1 = parseFloat(Roi.getProperty("DefaultY1"));
+	subjectLine = Line(subjectx0, subjecty0, subjectx1, subjecty1);
+	pA = newArray(subjectx0, subjecty0);
+	pD = newArray(subjectx1, subjecty1);
+	
+	refA = FindROIByName(refAstr);
+	if(refA == -1)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(refA + " not found!)";
+	}
+	roiManager("Select", refA);
+	ref1x0 = parseFloat(Roi.getProperty("DefaultX0"));
+	ref1y0 = parseFloat(Roi.getProperty("DefaultY0"));
+	ref1x1 = parseFloat(Roi.getProperty("DefaultX1"));
+	ref1y1 = parseFloat(Roi.getProperty("DefaultY1"));
+	ref1len = parseFloat(Roi.getProperty("RefLength"));
+	
+	ref1Line1 = Line(ref1x0, ref1y0, subjectx0, subjecty0);
+	ref1VP = IntersectionStandard(ref1Line1, horizon);
+	if(ref1VP.length == 0) ErrorMessage("The lines are parallel!"));
+	ref1Line2 = Line(ref1VP[0], ref1VP[1], ref1x1, ref1y1);
+	pB = IntersectionStandard(ref1Line2, subjectLine);
+	if(pB.length == 0) ErrorMessage("The lines are parallel!"));
+	
+	if(refBstr == "Camera Height")
+	{
+		ref2Line1 = Line(subjectx0, subjecty0, subjectx1, subjecty1);
+		pC = IntersectionStandard(ref2Line1, horizon);
+		if(pC.length == 0) ErrorMessage("The lines are parallel!"));
+		
+		// AB = REF1
+		// AC = camHeight
+		// AD = ??;
+		pPosX = newArray;
+		pPosY = newArray;
+		pPosX[0] = pA[0];
+		pPosY[0] = pA[1];
+		pPosX[1] = pB[0];
+		pPosY[1] = pB[1];
+		pPosX[2] = pC[0];
+		pPosY[2] = pC[1];
+		pPosX[3] = pD[0];
+		pPosY[3] = pD[1];
+		arrayLen = newArray;
+		arrayLen[0] = sqrt((pA[0]-vp3x[0])*(pA[0]-vp3x[0]) + (pA[1]-vp3y[0])*(pA[1]-vp3y[0]));
+		arrayLen[1] = sqrt((pB[0]-vp3x[0])*(pB[0]-vp3x[0]) + (pB[1]-vp3y[0])*(pB[1]-vp3y[0]));
+		arrayLen[2] = sqrt((pC[0]-vp3x[0])*(pC[0]-vp3x[0]) + (pC[1]-vp3y[0])*(pC[1]-vp3y[0]));
+		arrayLen[3] = sqrt((pD[0]-vp3x[0])*(pD[0]-vp3x[0]) + (pD[1]-vp3y[0])*(pD[1]-vp3y[0]));
+		rankPos = Array.rankPositions(arrayLen);
+		PA = newArray(pPosX[rankPos[0]], pPosY[rankPos[0]]);
+		PB = newArray(pPosX[rankPos[1]], pPosY[rankPos[1]]);
+		PC = newArray(pPosX[rankPos[2]], pPosY[rankPos[2]]);
+		PD = newArray(pPosX[rankPos[3]], pPosY[rankPos[3]]);
+		print("PA" + pPosX[rankPos[0]] + ", " + pPosY[rankPos[0]] + " distance=" + arrayLen[rankPos[0]]);
+		print("PB" + pPosX[rankPos[1]] + ", " + pPosY[rankPos[1]] + " distance=" + arrayLen[rankPos[1]]);
+		print("PC" + pPosX[rankPos[2]] + ", " + pPosY[rankPos[2]] + " distance=" + arrayLen[rankPos[2]]);
+		print("PD" + pPosX[rankPos[3]] + ", " + pPosY[rankPos[3]] + " distance=" + arrayLen[rankPos[3]]);
+		print("Order: " + rankPos[0] + ", " + rankPos[1] + ", " + rankPos[2] + ", " + rankPos[3]);
+		k = CrossRatio(PA, PB, PC, PD);
+		print("k = " + k);
+		LO = 0;
+		r1 = ref1len;
+		r2 = camHeight;
+		if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 3) LO = (r1*r2) / (r1*k-r2*k+r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 2) LO = (r1*r2*k) / (r1+r2*k-r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 3) LO = (r1*r2) / (r2*k-r1*k+r1);
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 1) LO = (r1*r2*k) / (r1*k-r1+r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 2 && rankPos[3] == 1) LO = (r1*r2*(k-1)) / (r1*k-r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 2) LO = (r1*r2-r1*r2*k) / (r1-r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 0 && rankPos[2] == 2 && rankPos[3] == 3) LO = (r1*r2*k) / (r1-r2*k+r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 0 && rankPos[2] == 3 && rankPos[3] == 2) LO = (r1*r2) / (r1*k+r2*k-r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 2 && rankPos[2] == 0 && rankPos[3] == 3) LO = (r1*r2*(k-1))/(r1-r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*r2*(k-1)) / (r1*k-r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 3 && rankPos[2] == 0 && rankPos[3] == 2) LO = (r1*r2)/(r1*k-r1+r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 3 && rankPos[2] == 2 && rankPos[3] == 0) LO = (r1*r2*k)/(r1*k-r1+r2);
+		else if(rankPos[0] == 2 && rankPos[1] == 0 && rankPos[2] == 1 && rankPos[3] == 3) LO = (r1*r2*k)/(r1+r2-r1*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 0 && rankPos[2] == 3 && rankPos[3] == 1) LO = (r1*r2)/(r1*k-r1+r2*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 0 && rankPos[3] == 3) LO = (r1*r2*k-r1*r2)/(r2-r1*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*r2-r1*r2*k)/(r1-r2*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 3 && rankPos[2] == 0 && rankPos[3] == 1) LO = (r1*r2)/(r1*k+r2*k-r2);
+		else if(rankPos[0] == 2 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 0) LO = (r1*r2*k)/(r1+r2*k-r2);
+		else if(rankPos[0] == 3 && rankPos[1] == 0 && rankPos[2] == 1 && rankPos[3] == 2) LO = (r1*r2*k - r1*r2)/(r2-r1*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 0 && rankPos[2] == 2 && rankPos[3] == 1) LO = (r1*r2*(k-1))/(r1-r2*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 1 && rankPos[2] == 0 && rankPos[3] == 2) LO = (r1*r2*k)/(r1+r2-r1*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 0) LO = (r1*r2)/(r2*k-r1*k+r1);
+		else if(rankPos[0] == 3 && rankPos[1] == 2 && rankPos[2] == 0 && rankPos[3] == 1) LO = (r1*r2*k)/(r1-r2*k+r2);
+		else if(rankPos[0] == 3 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 0) LO = (r1*r2)/(r1*k-r2*k+r2); 
+		else { ErrorMessage("BUG! Unknown case?"); }
+		print("Height of " + subjectStr + ": " + LO + "m");
+		
+		if(drawLines)
+		{
+			setColor(colMeasure);
+			setLineWidth(sizeMeasure);
+			moveTo(ref1x0, ref1y0);
+			lineTo(pA[0], pA[1]);
+			lineTo(ref1VP[0], ref1VP[1]);
+			lineTo(pB[0], pB[1]);
+			moveTo(pA[0], pA[1]);
+			lineTo(pC[0], pC[1]);
+			
+			DrawMeasurement(pA[0], pA[1], pD[0], pD[1], "" + LO + " m", 1, colMeasureLineA);
+			DrawMeasurement(pA[0], pA[1], pB[0], pB[1], "" + r1 + " m", 1.5, colMeasureLineB);
+			DrawMeasurement(pA[0], pA[1], pC[0], pC[1], "" + r2 + " m", 2, colMeasureLineC);
+		}
+	}
+	else if(refBstr == strVP3Label)
+	{
+		refB = FindROIByName(refBstr);
+		if(refB == -1)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage(refB + " not found!)";
+		}
+		roiManager("Select", refB);
+		ref2x0 = parseFloat(Roi.getProperty("DefaultX0"));
+		ref2y0 = parseFloat(Roi.getProperty("DefaultY0"));
+		pC = newArray(ref2x0, ref2y0);
+		
+		pPosX = newArray;
+		pPosY = newArray;
+		pPosX[0] = pA[0];
+		pPosY[0] = pA[1];
+		pPosX[1] = pB[0];
+		pPosY[1] = pB[1];
+		pPosX[2] = pC[0];
+		pPosY[2] = pC[1];
+		pPosX[3] = pD[0];
+		pPosY[3] = pD[1];
+		arrayLen = newArray;
+		arrayLen[0] = sqrt((pA[0]-vp3x[0])*(pA[0]-vp3x[0]) + (pA[1]-vp3y[0])*(pA[1]-vp3y[0]));
+		arrayLen[1] = sqrt((pB[0]-vp3x[0])*(pB[0]-vp3x[0]) + (pB[1]-vp3y[0])*(pB[1]-vp3y[0]));
+		arrayLen[2] = sqrt((pC[0]-vp3x[0])*(pC[0]-vp3x[0]) + (pC[1]-vp3y[0])*(pC[1]-vp3y[0]));
+		arrayLen[3] = sqrt((pD[0]-vp3x[0])*(pD[0]-vp3x[0]) + (pD[1]-vp3y[0])*(pD[1]-vp3y[0]));
+		rankPos = Array.rankPositions(arrayLen);
+		PA = newArray(pPosX[rankPos[0]], pPosY[rankPos[0]]);
+		PB = newArray(pPosX[rankPos[1]], pPosY[rankPos[1]]);
+		PC = newArray(pPosX[rankPos[2]], pPosY[rankPos[2]]);
+		PD = newArray(pPosX[rankPos[3]], pPosY[rankPos[3]]);
+		print("PA" + pPosX[rankPos[0]] + ", " + pPosY[rankPos[0]] + " distance=" + arrayLen[rankPos[0]]);
+		print("PB" + pPosX[rankPos[1]] + ", " + pPosY[rankPos[1]] + " distance=" + arrayLen[rankPos[1]]);
+		print("PC" + pPosX[rankPos[2]] + ", " + pPosY[rankPos[2]] + " distance=" + arrayLen[rankPos[2]]);
+		print("PD" + pPosX[rankPos[3]] + ", " + pPosY[rankPos[3]] + " distance=" + arrayLen[rankPos[3]]);
+		print("Order: " + rankPos[0] + ", " + rankPos[1] + ", " + rankPos[2] + ", " + rankPos[3]);
+		k = CrossRatio(PA, PB, PC, PD);
+		print("k = " + k);
+		LO = 0;
+		r1 = ref1len;
+		
+		if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 3) LO = r1*k;
+		else if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 2) LO = r1/k;
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 3) LO = r1*(k-1);
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 1) LO = (r1*k-1)/k;
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 2 && rankPos[3] == 1) LO = (r1*k)/(k-1);
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 2) LO = (r1)/(k-1);
+		else if(rankPos[0] == 1 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*k)/(k-1);
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*k-1)/(k);
+		
+		else if(rankPos[0] == 2 && rankPos[1] == 0 && rankPos[2] == 3 && rankPos[3] == 1) LO = r1/k; 	// adicionado
+		
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 0) LO = r1/(k-1);
+		else if(rankPos[0] == 2 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 0) LO = r1/k;
+		else if(rankPos[0] == 3 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 0) LO = r1*(k-1);
+		else if(rankPos[0] == 3 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 0) LO = r1*k);
+		else { ErrorMessage("BUG! Unknow case?"); }
+		
+		print("Height of " + subjectStr + ": " + LO + "m");
+		
+		if(drawLines)
+		{
+			setColor(colMeasure);
+			setLineWidth(sizeMeasure);
+			moveTo(ref1x0, ref1y0);
+			lineTo(pA[0], pA[1]);
+			lineTo(ref1VP[0], ref1VP[1]);
+			lineTo(pB[0], pB[1]);
+			lineTo(ref1x1, ref1y1);
+			
+			moveTo(pC[0], pC[1]);
+			lineTo(pD[0], pD[1]);
+			
+			DrawMeasurement(pA[0], pA[1], pD[0], pD[1], "" + LO + " m", 1,colMeasureLineA);
+			DrawMeasurement(pA[0], pA[1], pB[0], pB[1], "" + r1 + " m", 1.5, colMeasureLineB);
+			//DrawMeasurement(pA[0], pA[1], pC[0], pC[1], "" + r2 + " m", 2, colMeasureLineC);
+		}
+	}
+	else
+	{
+		refB = FindROIByName(refBstr);
+		if(refB == -1)
+		{
+			roiManager("Deselect");
+			run("Select None");
+			ErrorMessage(refB + " not found!)";
+		}
+		roiManager("Select", refB);
+		ref2x0 = parseFloat(Roi.getProperty("DefaultX0"));
+		ref2y0 = parseFloat(Roi.getProperty("DefaultY0"));
+		ref2x1 = parseFloat(Roi.getProperty("DefaultX1"));
+		ref2y1 = parseFloat(Roi.getProperty("DefaultY1"));
+		ref2len = parseFloat(Roi.getProperty("RefLength"));
+		
+		ref2Line1 = Line(ref2x0, ref2y0, subjectx0, subjecty0);
+		ref2VP = IntersectionStandard(ref2Line1, horizon);
+		if(ref2VP.length == 0) ErrorMessage("The lines are parallel!"));
+		ref2Line2 = Line(ref2VP[0], ref2VP[1], ref2x1, ref2y1);
+		pC = IntersectionStandard(ref2Line2, subjectLine);
+		if(pC.length == 0) ErrorMessage("The lines are parallel!"));
+		
+		pPosX = newArray;
+		pPosY = newArray;
+		pPosX[0] = pA[0];
+		pPosY[0] = pA[1];
+		pPosX[1] = pB[0];
+		pPosY[1] = pB[1];
+		pPosX[2] = pC[0];
+		pPosY[2] = pC[1];
+		pPosX[3] = pD[0];
+		pPosY[3] = pD[1];
+		arrayLen = newArray;
+		arrayLen[0] = sqrt((pA[0]-vp3x[0])*(pA[0]-vp3x[0]) + (pA[1]-vp3y[0])*(pA[1]-vp3y[0]));
+		arrayLen[1] = sqrt((pB[0]-vp3x[0])*(pB[0]-vp3x[0]) + (pB[1]-vp3y[0])*(pB[1]-vp3y[0]));
+		arrayLen[2] = sqrt((pC[0]-vp3x[0])*(pC[0]-vp3x[0]) + (pC[1]-vp3y[0])*(pC[1]-vp3y[0]));
+		arrayLen[3] = sqrt((pD[0]-vp3x[0])*(pD[0]-vp3x[0]) + (pD[1]-vp3y[0])*(pD[1]-vp3y[0]));
+		rankPos = Array.rankPositions(arrayLen);
+		PA = newArray(pPosX[rankPos[0]], pPosY[rankPos[0]]);
+		PB = newArray(pPosX[rankPos[1]], pPosY[rankPos[1]]);
+		PC = newArray(pPosX[rankPos[2]], pPosY[rankPos[2]]);
+		PD = newArray(pPosX[rankPos[3]], pPosY[rankPos[3]]);
+		print("PA" + pPosX[rankPos[0]] + ", " + pPosY[rankPos[0]] + " distance=" + arrayLen[rankPos[0]]);
+		print("PB" + pPosX[rankPos[1]] + ", " + pPosY[rankPos[1]] + " distance=" + arrayLen[rankPos[1]]);
+		print("PC" + pPosX[rankPos[2]] + ", " + pPosY[rankPos[2]] + " distance=" + arrayLen[rankPos[2]]);
+		print("PD" + pPosX[rankPos[3]] + ", " + pPosY[rankPos[3]] + " distance=" + arrayLen[rankPos[3]]);
+		print("Order: " + rankPos[0] + ", " + rankPos[1] + ", " + rankPos[2] + ", " + rankPos[3]);
+		k = CrossRatio(PA, PB, PC, PD);
+		print("k = " + k);
+		LO = 0;
+		r1 = ref1len;
+		r2 = ref2len;
+		if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 3) LO = (r1*r2) / (r1*k-r2*k+r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 2) LO = (r1*r2*k) / (r1+r2*k-r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 3) LO = (r1*r2) / (r2*k-r1*k+r1);
+		else if(rankPos[0] == 0 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 1) LO = (r1*r2*k) / (r1*k-r1+r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 2 && rankPos[3] == 1) LO = (r1*r2*(k-1)) / (r1*k-r2);
+		else if(rankPos[0] == 0 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 2) LO = (r1*r2-r1*r2*k) / (r1-r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 0 && rankPos[2] == 2 && rankPos[3] == 3) LO = (r1*r2*k) / (r1-r2*k+r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 0 && rankPos[2] == 3 && rankPos[3] == 2) LO = (r1*r2) / (r1*k+r2*k-r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 2 && rankPos[2] == 0 && rankPos[3] == 3) LO = (r1*r2*(k-1))/(r1-r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 2 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*r2*(k-1)) / (r1*k-r2);
+		else if(rankPos[0] == 1 && rankPos[1] == 3 && rankPos[2] == 0 && rankPos[3] == 2) LO = (r1*r2)/(r1*k-r1+r2*k);
+		else if(rankPos[0] == 1 && rankPos[1] == 3 && rankPos[2] == 2 && rankPos[3] == 0) LO = (r1*r2*k)/(r1*k-r1+r2);
+		else if(rankPos[0] == 2 && rankPos[1] == 0 && rankPos[2] == 1 && rankPos[3] == 3) LO = (r1*r2*k)/(r1+r2-r1*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 0 && rankPos[2] == 3 && rankPos[3] == 1) LO = (r1*r2)/(r1*k-r1+r2*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 0 && rankPos[3] == 3) LO = (r1*r2*k-r1*r2)/(r2-r1*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 1 && rankPos[2] == 3 && rankPos[3] == 0) LO = (r1*r2-r1*r2*k)/(r1-r2*k);
+		else if(rankPos[0] == 2 && rankPos[1] == 3 && rankPos[2] == 0 && rankPos[3] == 1) LO = (r1*r2)/(r1*k+r2*k-r2);
+		else if(rankPos[0] == 2 && rankPos[1] == 3 && rankPos[2] == 1 && rankPos[3] == 0) LO = (r1*r2*k)/(r1+r2*k-r2);
+		else if(rankPos[0] == 3 && rankPos[1] == 0 && rankPos[2] == 1 && rankPos[3] == 2) LO = (r1*r2*k - r1*r2)/(r2-r1*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 0 && rankPos[2] == 2 && rankPos[3] == 1) LO = (r1*r2*(k-1))/(r1-r2*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 1 && rankPos[2] == 0 && rankPos[3] == 2) LO = (r1*r2*k)/(r1+r2-r1*k);
+		else if(rankPos[0] == 3 && rankPos[1] == 1 && rankPos[2] == 2 && rankPos[3] == 0) LO = (r1*r2)/(r2*k-r1*k+r1);
+		else if(rankPos[0] == 3 && rankPos[1] == 2 && rankPos[2] == 0 && rankPos[3] == 1) LO = (r1*r2*k)/(r1-r2*k+r2);
+		else if(rankPos[0] == 3 && rankPos[1] == 2 && rankPos[2] == 1 && rankPos[3] == 0) LO = (r1*r2)/(r1*k-r2*k+r2);
+		else { ErrorMessage("BUG! Unknown case?"); }
+		print("Height of " + subjectStr + ": " + LO + "m");
+		
+		if(drawLines)
+		{
+			setColor(colMeasure);
+			setLineWidth(sizeMeasure);
+			moveTo(ref1x0, ref1y0);
+			lineTo(pA[0], pA[1]);
+			lineTo(ref1VP[0], ref1VP[1]);
+			lineTo(pB[0], pB[1]);
+			lineTo(ref1x1, ref1y1);		
+			moveTo(ref2x0, ref2y0);
+			lineTo(pA[0], pA[1]);
+			lineTo(ref2VP[0], ref2VP[1]);
+			lineTo(pC[0], pC[1]);
+			lineTo(ref2x1, ref2y1);
+			
+			DrawMeasurement(pA[0], pA[1], pD[0], pD[1], "" + LO + " m", 1, colMeasureLineA);
+			DrawMeasurement(pA[0], pA[1], pB[0], pB[1], "" + r1 + " m", 1.5, colMeasureLineB);
+			DrawMeasurement(pA[0], pA[1], pC[0], pC[1], "" + r2 + " m", 2, colMeasureLineC);
+		}
+	}
+	
+	roiManager("Deselect");
+	run("Select None");
+}
+
+function CalculateE()
+{
+	if(!CheckIfDone())
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("Vanish points setup not completed!");
+	}
+	
+	vp3 = FindROIByName(strVP3Label);
+	if(vp3 == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strVP3Label + " not found!)";
+	}
+	roiManager("Select", vp3);
+	Roi.getCoordinates(vp3x, vp3y);
+	
+	hl = FindROIByName(strHorizonLineLabel);
+	if(hl == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage(strHorizonLineLabel + " not found!)";
+	}
+	roiManager("Select", hl);
+	Roi.getCoordinates(hlx, hly);
+	horizon = Line(hlx[0], hly[0], hlx[1], hly[1]);
+	
+	getDimensions(width, height, channels, slices, frames);
+	centerx = width/2;
+	centery = height/2;
+	
+	verticalLine = Line(centerx, centery, vp3x[0], vp3y[0]);
+	hc = IntersectionStandard(horizon, verticalLine);
+	if(hc.length == 0) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("The lines are parallel!"));
+	}
+	
+	angle = GetCameraAngle(centerx, centery, hc[0] , hc[1], vp3x[0], vp3y[0]);
+	ppd = angle[1];
+	
+	print("Camera angle: " + angle[0]);
+	print("Picture Plane Distance: " + ppd);
+	print("Real Plane Distance: " + (ppd*cos(angle[0]*(PI/180))));
+	
+	// projetar um linha de ppd pixels para baixo do (hc[0],hc[1]) perpendicular ao horizonte
+	vx = vp3x[0]-hc[0];
+	vy = vp3y[0]-hc[1];
+	vlen = sqrt(vx*vx + vy*vy);
+	vx = ppd*(vx/vlen);
+	vy = ppd*(vy/vlen);
+	Ex = vx + hc[0];
+	Ey = vy + hc[1];
+	print("E = " + Ex + ", " + Ey);
+	
+	run("Select None");
+	makeLine(Ex, Ey, hc[0], hc[1]);
+	currentLine = RoiManager.size;
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strELabel);
+	roiManager("Set Color", "magenta");
+	roiManager("Set Line Width", 4);
+	Roi.setProperty("Type", "line");
+	Roi.setProperty("DefaultX0", Ex);
+	Roi.setProperty("DefaultY0", Ey);
+	Roi.setProperty("DefaultX1", hc[0]);
+	Roi.setProperty("DefaultY1", hc[1]);
+	roiManager("Deselect");
+	run("Select None");
+}
+
+function findVPAngle()
+{
+	setOption("ExpandableArrays", true);
+	Eroi = FindROIByName("E");
+	if(Eroi == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("E not found!)";
+	}
+	roiManager("Select", Eroi);
+	Roi.getCoordinates(Ex, Ey);
+	E = Line(Ex[0], Ey[0], Ex[1], Ey[1]);
+	
+	vpROIs = GetROIsWithRE(strVPLabel+"[xyzXYZ]?-?[0-9]*.?[0-9]*");
+	if(vpROIs.length == 0)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("No VPs!");
+	}
+	Dialog.create("DS Photogrammetry");
+	Dialog.addMessage("Select the VP");
+	Dialog.addChoice("VP", vpROIs, vpROIs[vpROIs.length-1]);
+	Dialog.show();
+	varVP = Dialog.getChoice();
+		
+	vp = FindROIByName(varVP);
+	if(vp == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("" + varVP + " not found!");
+	}
+	roiManager("Select", vp);
+	Roi.getCoordinates(vpx, vpy);
+	
+	v1x = Ex[1] - Ex[0];
+	v1y = Ey[1] - Ey[0];
+	v2x = vpx[0] - Ex[0];
+	v2y = vpy[0] - Ey[0];
+	
+	det = v1x*v2y - v1y*v2x;
+	dot = v1x*v2x + v1y*v2y;
+	angle = atan2(det,dot)*(180/PI);
+	print("angle: " + angle);
+	roiManager("Deselect");
+	run("Select None");
+}
+function doCrossRatio()
+{
+	//setBatchMode(true);
+	setOption("ExpandableArrays", true);
+	getDimensions(width, height, channels, slices, frames);
+	if(getValue("selection.size") != 4)
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("Must have four points!");
+	}
+	getSelectionCoordinates(px, py);
+	
+	anchorLines = GetROIsWithRE(strAnchorLineLabel+"[0-9]*");
+	makeSelection("point", px, py);
+	wait(1);
+	Dialog.create("DS Photogrammetry");
+	Dialog.addMessage("Select the Archor Line");
+	Dialog.addChoice("Anchor Line", anchorLines, anchorLines[anchorLines.length-1]);
+	Dialog.addMessage("Enter the Real distance");
+	Dialog.addMessage("VP --- A --- B --- C --- D\nVP --- 1 --- 2 --- 3 --- 4");
+	Dialog.addNumber("AB Distance", "");
+	Dialog.addNumber("BC Distance", "");
+	Dialog.addNumber("CD Distance", "");
+	Dialog.addChoice("Draw Lines", newArray("Yes", "No"), "Yes");
+	Dialog.show();
+	varAnchorLine = Dialog.getChoice();
+	varABDist = Dialog.getNumber();
+	varBCDist = Dialog.getNumber();
+	varCDDist = Dialog.getNumber();
+	drawLines = (Dialog.getChoice() == "Yes");
+	
+	roiid =  FindROIByName(varAnchorLine);
+	if(roiid == -1) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("ROI " + varAnchorLine + " not found!");
+	}
+	roiManager("Select", roiid);
+	Roi.getCoordinates(vpx, vpy);
+	roiLine = Line(vpx[0], vpy[0], vpx[1], vpy[1]);
+	PA = ClosestPointStandard(px[0], py[0], roiLine);
+	PB = ClosestPointStandard(px[1], py[1], roiLine);
+	PC = ClosestPointStandard(px[2], py[2], roiLine);
+	PD = ClosestPointStandard(px[3], py[3], roiLine);
+	k = CrossRatio(PA, PB, PC, PD);
+	
+	if(drawLines)
+	{
+		DrawCross(PA[0], PA[1], "white");
+		DrawCross(PB[0], PB[1], "white");
+		DrawCross(PC[0], PC[1], "white");
+		DrawCross(PD[0], PD[1], "white");
+		DrawText("A", PA[0], PA[1]+sizeTextOffset, "white");
+		DrawText("B", PB[0], PB[1]+sizeTextOffset, "white");
+		DrawText("C", PC[0], PC[1]+sizeTextOffset, "white");
+		DrawText("D", PD[0], PD[1]+sizeTextOffset, "white");
+	}
+	
+	numCase = -1;
+	validate = 0;
+	if(isNaN(varABDist)) { validate++; numCase = 0; }
+	if(isNaN(varBCDist)) { validate++; numCase = 1; }
+	if(isNaN(varCDDist)) { validate++; numCase = 2; }
+	if(validate > 1) 
+	{
+		if(isNaN(varABDist) && isNaN(varBCDist) && !isNaN(varCDDist)) { numCase = 3; }
+		else if(isNaN(varBCDist) && isNaN(varCDDist) && !isNaN(varABDist)) { numCase = 4; }
+		else if(isNaN(varABDist) && isNaN(varCDDist) && !isNaN(varBCDist)) { numCase = 5; }
+		else
+		{
+			roiManager("Deselect");
+			run("Select None");
+			makeSelection("point", px, py);
+			ErrorMessage("Only one value must be empty!");
+		}
+	}
+	validate = 0;
+	if(varABDist == 0) { validate++; }
+	if(varBCDist == 0) { validate++; }
+	if(varCDDist == 0) { validate++; }
+	if(validate != 0) 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		makeSelection("point", px, py);
+		ErrorMessage("Values can't be zero!");
+	}
+	
+	LO = 0;
+	if(numCase == 0) 
+	{
+		a = varBCDist;
+		b = varCDDist;
+		LO = a*(k-1)*(a+b)/(a-k*a+b);
+		print("AB = " + LO);
+		
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + LO + " m", 1, colMeasureLineA);
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + varBCDist + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + varCDDist + " m", 1, colMeasureLineC);
+	}
+	else if (numCase == 1) 
+	{
+		a = varABDist;
+		b = varCDDist;
+		LO = (sqrt( (a-a*k-b*k+b)*(a-a*k-b*k+b) - 4*a*b*(1-k)) + a -a*k -b*k + b) / (2*(k-1));
+		print("BC = " + LO);
+		
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + varABDist + " m", 1, colMeasureLineA);
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + LO + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + varCDDist + " m", 1, colMeasureLineC);
+	} else if (numCase == 2) 
+	{
+		a = varABDist;
+		b = varBCDist;
+		LO = (b*(k-1)*(a+b))/(a-b*k+b);
+		print("CD = " + LO);
+		
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + varABDist + " m", 1, colMeasureLineA);
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + varBCDist + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + LO + " m", 1, colMeasureLineC);
+	}
+	else if (numCase == 3) 
+	{
+		PA1 = newArray(vpx[0], vpy[0]);
+		PB1 = newArray(PA[0], PA[1]);
+		PC1 = newArray(PB[0], PB[1]);
+		PD1 = newArray(PC[0], PC[1]);
+		k1 = CrossRatio(PA1, PB1, PC1, PD1);
+		a = varCDDist;
+		LO = (a*k - a*k*k1 + a*k1)/((k-1)*(k1*k1-k1));
+		print("AB = " + LO);
+		
+		PA1 = newArray(vpx[0], vpy[0]);
+		PB1 = newArray(PB[0], PB[1]);
+		PC1 = newArray(PC[0], PC[1]);
+		PD1 = newArray(PD[0], PD[1]);
+		k1 = CrossRatio(PA1, PB1, PC1, PD1);
+		LO2 = a/(k1-1);
+		print("BC = " + LO2);
+		
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + LO + " m", 1, colMeasureLineA);
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + LO2 + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + varCDDist + " m", 1, colMeasureLineC);
+	}
+	else if (numCase == 4) 
+	{
+		PA1 = newArray(vpx[0], vpy[0]);
+		PB1 = newArray(PA[0], PA[1]);
+		PC1 = newArray(PB[0], PB[1]);
+		PD1 = newArray(PC[0], PC[1]);
+		k1 = CrossRatio(PA1, PB1, PC1, PD1);
+
+		a = varABDist;
+		LO = (a*(k-1)*(k1*k1-k1))/(k-k*k1+k1);
+		LO2 = a*(k1-1);
+		print("BC = " + LO2);
+		print("CD = " + LO);
+		
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + varABDist + " m", 1, colMeasureLineA);
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + LO2 + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + LO + " m", 1, colMeasureLineC);
+	}
+	else if (numCase == 5)  
+	{
+		PA1 = newArray(vpx[0], vpy[0]);
+		PB1 = newArray(PA[0], PA[1]);
+		PC1 = newArray(PB[0], PB[1]);
+		PD1 = newArray(PC[0], PC[1]);
+		k1 = CrossRatio(PA1, PB1, PC1, PD1);
+		a = varBCDist;
+		LO = a/(k1-1);
+		print("AB = " + (a/(k1-1)));
+		
+		PA1 = newArray(vpx[0], vpy[0]);
+		PB1 = newArray(PB[0], PB[1]);
+		PC1 = newArray(PC[0], PC[1]);
+		PD1 = newArray(PD[0], PD[1]);
+		k1 = CrossRatio(PA1, PB1, PC1, PD1);
+		LOCD = a*(k1-1);
+		print("CD = " + LOCD);
+		
+		DrawMeasurement(PB[0], PB[1], PC[0], PC[1], "" + varBCDist + " m", 1, colMeasureLineA);
+		DrawMeasurement(PA[0], PA[1], PB[0], PB[1], "" + LO + " m", 1, colMeasureLineB);
+		DrawMeasurement(PC[0], PC[1], PD[0], PD[1], "" + LOCD + " m", 1, colMeasureLineC);
+	}
+	else 
+	{
+		roiManager("Deselect");
+		run("Select None");
+		ErrorMessage("Invalid option!");
+	}
+	run("Select None");
+	newSelX = newArray(4);
+	newSelY = newArray(4);
+	newSelX[0] = PA[0];
+	newSelX[1] = PB[0];
+	newSelX[2] = PC[0];
+	newSelX[3] = PD[0];
+	newSelY[0] = PA[1];
+	newSelY[1] = PB[1];
+	newSelY[2] = PC[1];
+	newSelY[3] = PD[1];
+	makeSelection("point",newSelX,newSelY);
+	
+	currentLine = RoiManager.size;
+	roiManager("add");
+	roiManager("Select", currentLine);
+	roiManager("Rename", strMeasureLabel+currentLine);
+	roiManager("Set Color", colMeasure);
+	roiManager("Set Line Width", sizeMeasure);
+	roiManager("Deselect");
+	run("Select None");
+}
+
+/*
+ * Projective Transformation
+ */
+function DSProjectiveMapping()
+{
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+		ErrorMessage("No open images!");
+	}
+	if(getValue("selection.size") != 4)
+	{
+		ErrorMessage("Must have a selection with four points!");
+	}
+	
+	strLabelInfo = "Destination size";
+	Dialog.create("DS Projective Mapping");
+	Dialog.addMessage(strLabelInfo);
+	Dialog.addNumber("Width", 512);
+	Dialog.addNumber("Height", 256);
+	Dialog.show();
+	varWidth = Dialog.getNumber();
+	varHeight = Dialog.getNumber();
+	
+	setBatchMode(true);
+	
+	imSource = getImageID();
+	getDimensions(width, height, channels, slices, frames);
+	
+	currentPoint = 0;
+	getSelectionCoordinates(px, py);
+	minDist = (px[0]*px[0] + py[0]*py[0]);
+	for (i=1; i < px.length; i++)
+	{
+		dist = (px[i]*px[i] + py[i]*py[i]);
+		if(dist < minDist) 
+		{
+			minDist = dist;
+			currentPoint = i;
+		}
+	}
+	makePolygon(px[currentPoint], py[currentPoint], px[(currentPoint+1)%4], py[(currentPoint+1)%4], px[(currentPoint+2)%4], py[(currentPoint+2)%4], px[(currentPoint+3)%4], py[(currentPoint+3)%4]);
+	
+	selectImage(imSource);
+	run("Duplicate...", "title=ImgTmp");
+	imTmp = getImageID();
+	newImage("ProjectedImage", "8-bit black", varWidth, varHeight, 1);
+	imProjected = getImageID();
+	makePolygon(0, 0, varWidth, 0, varWidth, varHeight, 0, varHeight);	
+	run("Projective Mapping", "actual=ImgTmp target=ProjectedImage interpolation=Bilinear");
+	selectWindow("ImgTmp");
+	close();
+	selectWindow("ProjectedImage");
+	run("Select None");
+	setBatchMode("exit and display");
+}
+
+/*
+ * Macro Action Tools
+ */
+ 
+macro "DS Lens Distortion Action Tool - icon:06-cameradistotion.png" {
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+	    ErrorMessage("No open images!");
+	}
+	run("ds CAMDISTORTION");
+}
+/*
+macro "Projective Mapping Action Tool - C059T3e16A" {
+	DSProjectiveMapping();
+}
+*/
+
+macro "DS Photogrammetry Step Action Tool - icon:07-photostep.png" {
+	run("ROI Manager...");
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+	    ErrorMessage("No open images!");
+	}
+	setBatchMode(true);
+	PhotogrammetryStep();
+	setBatchMode("exit and display");
+}
+macro "DS Photogrammetry Anchor VP Action Tool - icon:08-anchor.png" {
+	run("ROI Manager...");
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+	    ErrorMessage("No open images!");
+	}
+	setBatchMode(true);
+	anchorVP();
+	setBatchMode("exit and display");
+}
+macro "DS Photogrammetry Make Reference Action Tool (known height) - icon:09-REF.png" {
+	run("ROI Manager...");
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+	    ErrorMessage("No open images!");
+	}
+	setBatchMode(true);
+	makeRef();
+	setBatchMode("exit and display");
+}
+macro "DS Photogrammetry Make Subject Action Tool (Desired height) - icon:09-SUB.png" {
+	run("ROI Manager...");
+	openedImages = getList("image.titles");
+	if (openedImages.length == 0) {
+	    ErrorMessage("No open images!");
+	}
+	setBatchMode(true);
+	makeSubject();
+	setBatchMode("exit and display");
+}
+
+macro "DS Photogrammetry Measure Action Tool - icon:09-measure.png" 
+{	
+	setBatchMode(true);
+	doMeasure();
+	setBatchMode("exit and display");
+}
+macro "DS Cross Ratio VP Action Tool - icon:09-crossratio.png" {
+	doCrossRatio();
+}
+macro "DS Photogrammetry Reset Line/VP Action Tool - icon:09-reset.png" {
+	setBatchMode(true);
+	resetRoi();
+	setBatchMode("exit and display");
+}

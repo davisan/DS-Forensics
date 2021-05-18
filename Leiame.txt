@@ -1,0 +1,5 @@
+Nas configuraçòes de inicialização (Edit -> Options -> Startup...) colocar essas 3 linhas:
+
+run("Install...", "install=macros/toolsets/DS_Photogrammetry.txt");
+wait(100);
+run("ds LoadOCV");
